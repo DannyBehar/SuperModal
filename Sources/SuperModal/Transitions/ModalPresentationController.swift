@@ -40,23 +40,14 @@ class ModalPresentationController: UIPresentationController {
         ])
 
         let shouldTransformPresentingModal = shouldTransformPresentingView()
-
-        guard let coordinator = presentedViewController.transitionCoordinator else {
-            fadeView.alpha = 1.0
-            if shouldTransformPresentingModal {
-                applyTransformToPresentingView()
-                didTransformPresentingView = true
-            }
-            return
-        }
-
-        coordinator.animate(alongsideTransition: { _ in
+        let animator = UIViewPropertyAnimator(duration: modalTransitionDuration, dampingRatio: 1.0) {
             self.fadeView.alpha = 1.0
             if shouldTransformPresentingModal {
                 self.applyTransformToPresentingView()
                 self.didTransformPresentingView = true
             }
-        })
+        }
+        animator.startAnimation()
     }
 
     @objc private func handleBackgroundTap() {
@@ -64,26 +55,18 @@ class ModalPresentationController: UIPresentationController {
     }
 
     override func dismissalTransitionWillBegin() {
-        guard let coordinator = presentedViewController.transitionCoordinator else {
-            fadeView.alpha = 0.0
-            if didTransformPresentingView {
-                resetTransformOnPresentingView()
-                didTransformPresentingView = false
-            }
+        if presentedViewController.transitionCoordinator?.isInteractive == true {
             return
         }
 
-        if coordinator.isInteractive {
-            return
-        }
-
-        coordinator.animate(alongsideTransition: { _ in
+        let animator = UIViewPropertyAnimator(duration: modalTransitionDuration, dampingRatio: 1.0) {
             self.fadeView.alpha = 0.0
             if self.didTransformPresentingView {
                 self.resetTransformOnPresentingView()
                 self.didTransformPresentingView = false
             }
-        })
+        }
+        animator.startAnimation()
     }
 
     override func presentationTransitionDidEnd(_ completed: Bool) {

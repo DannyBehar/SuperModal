@@ -42,7 +42,10 @@ final class SuperModalHostingController<Content: View>: UIViewController, Custom
         addChild(hostingController)
         hostingController.view.translatesAutoresizingMaskIntoConstraints = false
         hostingController.view.backgroundColor = .clear
-        hostingController.safeAreaRegions = .container
+        
+        if #available(iOS 16.4, *) {
+            hostingController.safeAreaRegions = .container
+        }
 
         view.addSubview(contentContainerView)
         contentContainerView.addSubview(hostingController.view)
@@ -213,20 +216,25 @@ extension View {
     }
 }
 
-
-#Preview {
-    @Previewable @State var isPresented: Bool = false
+struct SuperModalPreviewContainer: View {
+    @State var isPresented: Bool = false
     
-    VStack {
-        Color.green
-        
-        Button("Tap Me") {
-            isPresented.toggle()
+    var body: some View {
+        VStack {
+            Color.green
+            
+            Button("Tap Me") {
+                isPresented.toggle()
+            }
+        }
+        .superModal(isPresented: $isPresented) {
+           FirstModalView()
         }
     }
-    .superModal(isPresented: $isPresented) {
-       FirstModalView()
-    }
+}
+
+#Preview {
+    SuperModalPreviewContainer()
 }
 
 
