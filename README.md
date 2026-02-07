@@ -1,3 +1,4 @@
+![PDFViewer Branding](./branding.png)
 # SuperModal
 
 `SuperModal` is a SwiftUI wrapper around a custom UIViewController modal transition system.
