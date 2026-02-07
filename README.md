@@ -23,6 +23,17 @@ From Daniel's blog posts:
 
 [Make your custom transitions resizable](https://danielgauthier.me/2020/03/03/indie5-3.html)
 
+## Demo
+Bottom aligned with stacking
+
+https://github.com/user-attachments/assets/9aacc31e-4798-458d-bf17-f5cc5ecdfd1b
+
+Top aligned
+
+https://github.com/user-attachments/assets/26814fcd-3933-4c65-8825-6ba925e628f8
+
+
+
 ## Requirements
 
 - iOS 16.0+
