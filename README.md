@@ -11,7 +11,7 @@ It provides a simple and familiar SwiftUI API for:
 
 ## Origin / Attribution
 
-This project is based on @danielmgauthier's UIKit transition work:
+This project is based on [@danielmgauthier](https://github.com/danielmgauthier)'s UIKit transition work:
 
 - [ViewControllerTransitionExample](https://github.com/danielmgauthier/ViewControllerTransitionExample)
 
