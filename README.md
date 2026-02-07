@@ -25,7 +25,7 @@ From Daniel's blog posts:
 
 ## Requirements
 
-- iOS 17.0+
+- iOS 16.0+
 - Swift 6.2 toolchain (per `Package.swift`)
 
 ## Installation (Swift Package Manager)
