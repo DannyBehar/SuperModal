@@ -1,6 +1,43 @@
 import SwiftUI
 import UIKit
 
+// Stored in a preference value and consumed on the main actor by UIKit presentation code.
+// The closure only builds SwiftUI view values and is never shared across threads in practice.
+private final class SuperModalBackgroundProvider: Equatable, @unchecked Sendable {
+    let makeBackgroundView: () -> AnyView
+
+    init(makeBackgroundView: @escaping () -> AnyView) {
+        self.makeBackgroundView = makeBackgroundView
+    }
+
+    static func == (lhs: SuperModalBackgroundProvider, rhs: SuperModalBackgroundProvider) -> Bool {
+        lhs === rhs
+    }
+}
+
+private struct SuperModalBackgroundPreferenceKey: PreferenceKey {
+    static let defaultValue: SuperModalBackgroundProvider? = nil
+
+    static func reduce(value: inout SuperModalBackgroundProvider?, nextValue: () -> SuperModalBackgroundProvider?) {
+        value = nextValue() ?? value
+    }
+}
+
+private func makeDefaultModalBackgroundView() -> AnyView {
+    AnyView(Rectangle().fill(Color(uiColor: .systemBackground)))
+}
+
+private struct SuperModalContentView<Content: View>: View {
+    let content: Content
+    let onModalBackgroundChange: (SuperModalBackgroundProvider?) -> Void
+
+    var body: some View {
+        content.onPreferenceChange(SuperModalBackgroundPreferenceKey.self) { provider in
+            onModalBackgroundChange(provider)
+        }
+    }
+}
+
 final class SuperModalHostingController<Content: View>: UIViewController, CustomPresentable {
     var transitionManager: UIViewControllerTransitioningDelegate?
     var onDismiss: (() -> Void)?
@@ -8,16 +45,24 @@ final class SuperModalHostingController<Content: View>: UIViewController, Custom
     var presentationTransformTargetView: UIView? { contentContainerView }
 
     private let contentContainerView = UIView()
-    private var hostingController: UIHostingController<Content>
+    private var currentRootView: Content
+    private var currentModalBackgroundProvider: SuperModalBackgroundProvider?
+    private var modalBackgroundHostingController: UIHostingController<AnyView>?
+    private var hostingController: UIHostingController<SuperModalContentView<Content>>
 
     var rootView: Content {
-        get { hostingController.rootView }
-        set { hostingController.rootView = newValue }
+        get { currentRootView }
+        set {
+            currentRootView = newValue
+            hostingController.rootView = wrappedRootView(newValue)
+        }
     }
 
     init(rootView: Content) {
-        hostingController = UIHostingController(rootView: rootView)
+        currentRootView = rootView
+        hostingController = UIHostingController(rootView: SuperModalContentView(content: rootView, onModalBackgroundChange: { _ in }))
         super.init(nibName: nil, bundle: nil)
+        hostingController.rootView = wrappedRootView(rootView)
     }
 
     required init?(coder: NSCoder) {
@@ -29,7 +74,7 @@ final class SuperModalHostingController<Content: View>: UIViewController, Custom
         view.backgroundColor = .clear
 
         contentContainerView.translatesAutoresizingMaskIntoConstraints = false
-        contentContainerView.backgroundColor = .systemBackground
+        contentContainerView.backgroundColor = .clear
         
         if #available(iOS 26.0, *) {
             contentContainerView.cornerConfiguration = .uniformCorners(radius: .containerConcentric(minimum: 20))
@@ -39,6 +84,12 @@ final class SuperModalHostingController<Content: View>: UIViewController, Custom
         
         contentContainerView.layer.masksToBounds = true
 
+        let backgroundHostingController = UIHostingController(rootView: makeDefaultModalBackgroundView())
+        backgroundHostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        backgroundHostingController.view.backgroundColor = .clear
+        modalBackgroundHostingController = backgroundHostingController
+
+        addChild(backgroundHostingController)
         addChild(hostingController)
         hostingController.view.translatesAutoresizingMaskIntoConstraints = false
         hostingController.view.backgroundColor = .clear
@@ -48,6 +99,7 @@ final class SuperModalHostingController<Content: View>: UIViewController, Custom
         }
 
         view.addSubview(contentContainerView)
+        contentContainerView.addSubview(backgroundHostingController.view)
         contentContainerView.addSubview(hostingController.view)
 
         NSLayoutConstraint.activate([
@@ -56,12 +108,18 @@ final class SuperModalHostingController<Content: View>: UIViewController, Custom
             contentContainerView.topAnchor.constraint(equalTo: view.topAnchor),
             contentContainerView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
+            backgroundHostingController.view.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor),
+            backgroundHostingController.view.trailingAnchor.constraint(equalTo: contentContainerView.trailingAnchor),
+            backgroundHostingController.view.topAnchor.constraint(equalTo: contentContainerView.topAnchor),
+            backgroundHostingController.view.bottomAnchor.constraint(equalTo: contentContainerView.bottomAnchor),
+
             hostingController.view.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor),
             hostingController.view.trailingAnchor.constraint(equalTo: contentContainerView.trailingAnchor),
             hostingController.view.topAnchor.constraint(equalTo: contentContainerView.topAnchor),
             hostingController.view.bottomAnchor.constraint(equalTo: contentContainerView.bottomAnchor)
         ])
 
+        backgroundHostingController.didMove(toParent: self)
         hostingController.didMove(toParent: self)
     }
     
@@ -70,6 +128,23 @@ final class SuperModalHostingController<Content: View>: UIViewController, Custom
         if isBeingDismissed || presentingViewController == nil {
             onDismiss?()
         }
+    }
+
+    private func wrappedRootView(_ rootView: Content) -> SuperModalContentView<Content> {
+        SuperModalContentView(content: rootView) { [weak self] provider in
+            self?.setModalBackgroundProvider(provider)
+        }
+    }
+
+    private func setModalBackgroundProvider(_ provider: SuperModalBackgroundProvider?) {
+        if currentModalBackgroundProvider == nil, provider == nil {
+            return
+        }
+        if let currentModalBackgroundProvider, let provider, currentModalBackgroundProvider === provider {
+            return
+        }
+        currentModalBackgroundProvider = provider
+        modalBackgroundHostingController?.rootView = provider?.makeBackgroundView() ?? makeDefaultModalBackgroundView()
     }
 }
 
@@ -212,6 +287,15 @@ extension View {
                 alignment: alignment,
                 content: content
             )
+        )
+    }
+
+    public func superModalBackground<S: ShapeStyle>(_ style: S) -> some View {
+        preference(
+            key: SuperModalBackgroundPreferenceKey.self,
+            value: SuperModalBackgroundProvider {
+                AnyView(Rectangle().fill(style))
+            }
         )
     }
 }

@@ -72,6 +72,7 @@ Available modifiers:
 
 - `superModal(isPresented:interactiveDismissalType:alignment:content:)`
 - `superModal(item:interactiveDismissalType:alignment:content:)`
+- `superModalBackground(_:)` where the argument conforms to `ShapeStyle`
 
 Options:
 
