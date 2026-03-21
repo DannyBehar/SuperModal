@@ -95,6 +95,7 @@ final class SuperModalHostingController<Content: View>: UIViewController, Custom
         hostingController.view.backgroundColor = .clear
         
         if #available(iOS 16.4, *) {
+            backgroundHostingController.safeAreaRegions = .container
             hostingController.safeAreaRegions = .container
         }
 
