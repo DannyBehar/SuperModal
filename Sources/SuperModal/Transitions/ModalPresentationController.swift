@@ -246,8 +246,6 @@ class ModalPresentationController: UIPresentationController {
 
         if previousKeyboardHeight == 0.0, keyboardHeight > 0.0 {
             lockedHeightWhileKeyboardVisible = basePresentedFrame.height > 0.0 ? basePresentedFrame.height : presentedView?.bounds.height
-            containerView.setNeedsLayout()
-            containerView.layoutIfNeeded()
         }
 
         keyboardAnimator?.stopAnimation(true)
@@ -262,7 +260,9 @@ class ModalPresentationController: UIPresentationController {
             return
         }
         let animator = UIViewPropertyAnimator(duration: modalTransitionDuration, dampingRatio: 1.0) {
-            self.applyKeyboardLift(in: containerView)
+            // Region selection also depends on the keyboard, so recompute the base frame.
+            containerView.setNeedsLayout()
+            containerView.layoutIfNeeded()
         }
         animator.addCompletion { [weak self] _ in
             guard let self else { return }
@@ -307,6 +307,14 @@ class ModalPresentationController: UIPresentationController {
         presentedView.transform = CGAffineTransform(translationX: 0.0, y: -lift)
     }
 
+    // Keep the hardware query separate so layout can be exercised with synthetic regions.
+    func divisionRegions(in containerView: UIView) -> [(frame: CGRect, isActive: Bool)] {
+        if #available(iOS 27.1, *) {
+            return containerView.reservedRegions(kind: .division).map { ($0.frame, $0.isActive) }
+        }
+        return []
+    }
+
     private func safeAreaFrame(
         in containerView: UIView,
         for alignment: ModalPresentationAlignment
@@ -314,7 +322,7 @@ class ModalPresentationController: UIPresentationController {
         let safeAreaFrame = containerView.bounds.inset(by: containerView.safeAreaInsets)
 
         if #available(iOS 27.1, *) {
-            let availableFrames = containerView.reservedRegions(kind: .division)
+            let availableFrames = divisionRegions(in: containerView)
                 .filter(\.isActive)
                 .reduce([safeAreaFrame]) { frames, region in
                     frames.flatMap { availableFrames(in: $0, avoiding: region.frame) }
@@ -322,16 +330,17 @@ class ModalPresentationController: UIPresentationController {
 
             guard !availableFrames.isEmpty else { return safeAreaFrame }
 
+            let preferredFrame: CGRect
             switch alignment {
             case .top:
-                return availableFrames.min { lhs, rhs in
+                preferredFrame = availableFrames.min { lhs, rhs in
                     if lhs.minY != rhs.minY {
                         return lhs.minY < rhs.minY
                     }
                     return lhs.maxX > rhs.maxX
                 } ?? safeAreaFrame
             case .center:
-                return availableFrames.max { lhs, rhs in
+                preferredFrame = availableFrames.max { lhs, rhs in
                     let lhsArea = lhs.width * lhs.height
                     let rhsArea = rhs.width * rhs.height
                     if lhsArea != rhsArea {
@@ -340,13 +349,47 @@ class ModalPresentationController: UIPresentationController {
                     return lhs.maxX < rhs.maxX
                 } ?? safeAreaFrame
             case .bottom:
-                return availableFrames.max { lhs, rhs in
+                preferredFrame = availableFrames.max { lhs, rhs in
                     if lhs.maxY != rhs.maxY {
                         return lhs.maxY < rhs.maxY
                     }
                     return lhs.maxX < rhs.maxX
                 } ?? safeAreaFrame
             }
+
+            let keyboardFrame = keyboardFrame(in: containerView)
+            let keyboardIntersection = preferredFrame.intersection(keyboardFrame)
+            guard !keyboardIntersection.isNull, !keyboardIntersection.isEmpty else {
+                return preferredFrame
+            }
+
+            func fitsAboveKeyboard(in region: CGRect) -> Bool {
+                guard let presentedView else { return false }
+                let availableWidth = max(0.0, region.width - 32.0)
+                let width = presentedViewController.traitCollection.horizontalSizeClass == .regular
+                    ? min(availableWidth, 550.0) : availableWidth
+                guard width > 0.0 else { return false }
+
+                let height = lockedHeightWhileKeyboardVisible ?? presentedView.systemLayoutSizeFitting(
+                    CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+                    withHorizontalFittingPriority: .required,
+                    verticalFittingPriority: .defaultLow
+                ).height
+                let intersection = region.intersection(keyboardFrame)
+                let bottom = intersection.isNull || intersection.isEmpty ? region.maxY : intersection.minY
+                return height + 2 * verticalPadding <= bottom - region.minY
+            }
+
+            if fitsAboveKeyboard(in: preferredFrame) {
+                return preferredFrame
+            }
+
+            // The keyboard can occupy the lower half in tabletop pose. Move to a
+            // different division region only when the preferred region cannot fit.
+            return availableFrames
+                .filter { $0 != preferredFrame && fitsAboveKeyboard(in: $0) }
+                .min { abs($0.midY - preferredFrame.midY) < abs($1.midY - preferredFrame.midY) }
+                ?? preferredFrame
         }
 
         return safeAreaFrame
