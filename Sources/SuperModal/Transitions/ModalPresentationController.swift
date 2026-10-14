@@ -19,6 +19,8 @@ class ModalPresentationController: UIPresentationController {
     private var didTransformPresentingView = false
     private weak var transformedPresentingView: UIView?
     private var keyboardHeight: CGFloat = 0.0
+    private var keyboardFrameInScreen: CGRect = .null
+    private weak var keyboardScreen: UIScreen?
     private var keyboardAnimator: UIViewPropertyAnimator?
     private var basePresentedFrame: CGRect = .zero
     private var lockedHeightWhileKeyboardVisible: CGFloat?
@@ -91,6 +93,8 @@ class ModalPresentationController: UIPresentationController {
             keyboardAnimator?.stopAnimation(true)
             keyboardAnimator = nil
             keyboardHeight = 0.0
+            keyboardFrameInScreen = .null
+            keyboardScreen = nil
             basePresentedFrame = .zero
             lockedHeightWhileKeyboardVisible = nil
         }
@@ -104,11 +108,18 @@ class ModalPresentationController: UIPresentationController {
         applyKeyboardLift(in: containerView)
     }
 
+    func invalidateContentSize() {
+        // A changed row count must be measured again even while the keyboard is visible.
+        lockedHeightWhileKeyboardVisible = nil
+        containerView?.setNeedsLayout()
+    }
+
     override var frameOfPresentedViewInContainerView: CGRect {
         guard let containerView = containerView, let presentedView = presentedView else { return .zero }
 
         let inset: CGFloat = 16
-        let safeAreaFrame = containerView.bounds.inset(by: containerView.safeAreaInsets)
+        let alignment = (presentedViewController as? CustomPresentable)?.presentationAlignment ?? .top
+        let safeAreaFrame = safeAreaFrame(in: containerView, for: alignment)
 
         let availableWidth = safeAreaFrame.width - 2 * inset
         let maxRegularWidth: CGFloat = 550.0
@@ -140,7 +151,6 @@ class ModalPresentationController: UIPresentationController {
         frame.size.width = targetWidth
         frame.size.height = resolvedHeight
 
-        let alignment = (presentedViewController as? CustomPresentable)?.presentationAlignment ?? .top
         switch alignment {
         case .top:
             frame.origin.y = safeAreaFrame.minY + verticalPadding
@@ -207,11 +217,13 @@ class ModalPresentationController: UIPresentationController {
     private func startObservingKeyboardNotifications() {
         NotificationCenter.default.addObserver(self, selector: #selector(handleKeyboardNotification(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleKeyboardNotification(_:)), name: UIResponder.keyboardWillHideNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleKeyboardNotification(_:)), name: UIResponder.keyboardDidChangeFrameNotification, object: nil)
     }
 
     private func stopObservingKeyboardNotifications() {
         NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillHideNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardDidChangeFrameNotification, object: nil)
     }
 
     @objc private func handleKeyboardNotification(_ notification: Notification) {
@@ -221,11 +233,15 @@ class ModalPresentationController: UIPresentationController {
         }
 
         let previousKeyboardHeight = keyboardHeight
-        if let endFrameValue = userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue {
-            let endFrameInContainer = containerView.convert(endFrameValue.cgRectValue, from: nil)
-            keyboardHeight = max(0.0, containerView.bounds.maxY - endFrameInContainer.minY)
-        } else if notification.name == UIResponder.keyboardWillHideNotification {
+        if notification.name == UIResponder.keyboardWillHideNotification {
             keyboardHeight = 0.0
+            keyboardFrameInScreen = .null
+            keyboardScreen = nil
+        } else if let endFrameValue = userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue {
+            keyboardFrameInScreen = endFrameValue.cgRectValue
+            keyboardScreen = (notification.object as? UIScreen) ?? containerView.window?.screen
+            let intersection = containerView.bounds.intersection(keyboardFrame(in: containerView))
+            keyboardHeight = intersection.isNull || intersection.isEmpty ? 0.0 : intersection.height
         }
 
         if previousKeyboardHeight == 0.0, keyboardHeight > 0.0 {
@@ -235,6 +251,16 @@ class ModalPresentationController: UIPresentationController {
         }
 
         keyboardAnimator?.stopAnimation(true)
+        if notification.name == UIResponder.keyboardDidChangeFrameNotification {
+            keyboardAnimator = nil
+            if keyboardHeight == 0.0 {
+                lockedHeightWhileKeyboardVisible = nil
+            }
+            // Reconcile the final keyboard frame after rotation has finished laying out.
+            containerView.setNeedsLayout()
+            containerView.layoutIfNeeded()
+            return
+        }
         let animator = UIViewPropertyAnimator(duration: modalTransitionDuration, dampingRatio: 1.0) {
             self.applyKeyboardLift(in: containerView)
         }
@@ -251,11 +277,27 @@ class ModalPresentationController: UIPresentationController {
         animator.startAnimation()
     }
 
+    private func keyboardFrame(in containerView: UIView) -> CGRect {
+        guard !keyboardFrameInScreen.isNull,
+              let screen = keyboardScreen ?? containerView.window?.screen,
+              containerView.window?.screen === screen else { return .null }
+
+        // Convert on every layout pass; the container may have moved since the notification.
+        return containerView.convert(keyboardFrameInScreen, from: screen.coordinateSpace)
+    }
+
     private func applyKeyboardLift(in containerView: UIView?) {
         guard let containerView, let presentedView else { return }
-        let safeAreaFrame = containerView.bounds.inset(by: containerView.safeAreaInsets)
-        let keyboardGap = keyboardHeight > 0.0 ? verticalPadding : 0.0
-        let allowedBottom = safeAreaFrame.maxY - keyboardHeight - keyboardGap
+        let alignment = (presentedViewController as? CustomPresentable)?.presentationAlignment ?? .top
+        let safeAreaFrame = safeAreaFrame(in: containerView, for: alignment)
+        let keyboardIntersection = safeAreaFrame.intersection(keyboardFrame(in: containerView))
+        let allowedBottom: CGFloat
+        if keyboardIntersection.isNull || keyboardIntersection.isEmpty {
+            allowedBottom = safeAreaFrame.maxY
+        } else {
+            // Only reserve space where the keyboard overlaps the selected region.
+            allowedBottom = keyboardIntersection.minY - verticalPadding
+        }
 
         let desiredLift = max(0.0, basePresentedFrame.maxY - allowedBottom)
         let minY = safeAreaFrame.minY + verticalPadding
@@ -263,5 +305,67 @@ class ModalPresentationController: UIPresentationController {
         let lift = min(desiredLift, maxLift)
 
         presentedView.transform = CGAffineTransform(translationX: 0.0, y: -lift)
+    }
+
+    private func safeAreaFrame(
+        in containerView: UIView,
+        for alignment: ModalPresentationAlignment
+    ) -> CGRect {
+        let safeAreaFrame = containerView.bounds.inset(by: containerView.safeAreaInsets)
+
+        if #available(iOS 27.1, *) {
+            let availableFrames = containerView.reservedRegions(kind: .division)
+                .filter(\.isActive)
+                .reduce([safeAreaFrame]) { frames, region in
+                    frames.flatMap { availableFrames(in: $0, avoiding: region.frame) }
+                }
+
+            guard !availableFrames.isEmpty else { return safeAreaFrame }
+
+            switch alignment {
+            case .top:
+                return availableFrames.min { lhs, rhs in
+                    if lhs.minY != rhs.minY {
+                        return lhs.minY < rhs.minY
+                    }
+                    return lhs.maxX > rhs.maxX
+                } ?? safeAreaFrame
+            case .center:
+                return availableFrames.max { lhs, rhs in
+                    let lhsArea = lhs.width * lhs.height
+                    let rhsArea = rhs.width * rhs.height
+                    if lhsArea != rhsArea {
+                        return lhsArea < rhsArea
+                    }
+                    return lhs.maxX < rhs.maxX
+                } ?? safeAreaFrame
+            case .bottom:
+                return availableFrames.max { lhs, rhs in
+                    if lhs.maxY != rhs.maxY {
+                        return lhs.maxY < rhs.maxY
+                    }
+                    return lhs.maxX < rhs.maxX
+                } ?? safeAreaFrame
+            }
+        }
+
+        return safeAreaFrame
+    }
+
+    private func availableFrames(in frame: CGRect, avoiding reservedFrame: CGRect) -> [CGRect] {
+        let intersection = frame.intersection(reservedFrame)
+        guard !intersection.isNull, !intersection.isEmpty else { return [frame] }
+
+        if intersection.width < intersection.height {
+            return [
+                CGRect(x: frame.minX, y: frame.minY, width: max(0.0, intersection.minX - frame.minX), height: frame.height),
+                CGRect(x: intersection.maxX, y: frame.minY, width: max(0.0, frame.maxX - intersection.maxX), height: frame.height)
+            ].filter { !$0.isEmpty }
+        }
+
+        return [
+            CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: max(0.0, intersection.minY - frame.minY)),
+            CGRect(x: frame.minX, y: intersection.maxY, width: frame.width, height: max(0.0, frame.maxY - intersection.maxY))
+        ].filter { !$0.isEmpty }
     }
 }

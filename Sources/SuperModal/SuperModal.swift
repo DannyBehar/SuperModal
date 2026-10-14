@@ -93,6 +93,9 @@ final class SuperModalHostingController<Content: View>: UIViewController, Custom
         addChild(hostingController)
         hostingController.view.translatesAutoresizingMaskIntoConstraints = false
         hostingController.view.backgroundColor = .clear
+        if #available(iOS 16.0, *) {
+            hostingController.sizingOptions = [.intrinsicContentSize, .preferredContentSize]
+        }
         
         if #available(iOS 16.4, *) {
             backgroundHostingController.safeAreaRegions = .container
@@ -129,6 +132,14 @@ final class SuperModalHostingController<Content: View>: UIViewController, Custom
         if isBeingDismissed || presentingViewController == nil {
             onDismiss?()
         }
+    }
+
+    override func preferredContentSizeDidChange(forChildContentContainer container: UIContentContainer) {
+        super.preferredContentSizeDidChange(forChildContentContainer: container)
+        guard container === hostingController else { return }
+
+        // SwiftUI can resolve its new size after the representable's update has returned.
+        (presentationController as? ModalPresentationController)?.invalidateContentSize()
     }
 
     private func wrappedRootView(_ rootView: Content) -> SuperModalContentView<Content> {
