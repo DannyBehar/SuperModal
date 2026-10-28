@@ -4,6 +4,8 @@ protocol CustomPresentable: UIViewController {
     var transitionManager: UIViewControllerTransitioningDelegate? { get set }
     var dismissalHandlingScrollView: UIScrollView? { get }
     var presentationAlignment: ModalPresentationAlignment { get }
+    var presentationSide: ModalPresentationSide { get }
+    var presentationSourceView: UIView? { get }
     var presentationTransformTargetView: UIView? { get }
     func updatePresentationLayout(animated: Bool)
 }
@@ -11,6 +13,8 @@ protocol CustomPresentable: UIViewController {
 extension CustomPresentable {
     var dismissalHandlingScrollView: UIScrollView? { nil }
     var presentationAlignment: ModalPresentationAlignment { .top }
+    var presentationSide: ModalPresentationSide { .automatic }
+    var presentationSourceView: UIView? { nil }
     var presentationTransformTargetView: UIView? { nil }
 
     func updatePresentationLayout(animated: Bool = false) {

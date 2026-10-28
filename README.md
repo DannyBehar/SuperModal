@@ -70,14 +70,48 @@ import SuperModal
 
 Available modifiers:
 
-- `superModal(isPresented:interactiveDismissalType:alignment:content:)`
-- `superModal(item:interactiveDismissalType:alignment:content:)`
+- `superModal(isPresented:interactiveDismissalType:alignment:side:content:)`
+- `superModal(item:interactiveDismissalType:alignment:side:content:)`
 - `superModalBackground(_:)` where the argument conforms to `ShapeStyle`
 
 Options:
 
 - `InteractiveDismissalType`: `.none`, `.standard`
 - `ModalPresentationAlignment`: `.top`, `.center`, `.bottom`
+- `ModalPresentationSide`: `.automatic` (default), `.left`, `.right`
+
+On a folded iPhone Duo, automatic side selection uses the position of the view carrying
+`.superModal`. Attach the modifier to the invoking pane or button. If the modifier is on
+a view spanning both panes, pass the side from the action that opens the modal:
+
+```swift
+@State private var showModal = false
+@State private var modalSide: ModalPresentationSide = .left
+
+var body: some View {
+    HStack {
+        Button("Open from left") {
+            modalSide = .left
+            showModal = true
+        }
+        Spacer()
+        Button("Open from right") {
+            modalSide = .right
+            showModal = true
+        }
+    }
+    .superModal(isPresented: $showModal, alignment: .bottom, side: modalSide) {
+        Text("Modal content").padding()
+    }
+}
+```
+
+Automatic placement follows the source view as a sheet or split-view pane moves during
+fold transitions. While the source spans both panes or lies within the crease, the last
+resolved side is retained. An explicit side stays fixed for that presentation. `alignment`
+continues to control top, center, or bottom placement, including tabletop pose. Keyboard avoidance
+can use another region when the preferred region cannot fit the content. Both modal
+overloads accept `side`.
 
 ## Example 1: Boolean Presentation
 

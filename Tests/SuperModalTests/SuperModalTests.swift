@@ -37,10 +37,41 @@ struct SuperModalTests {
     func asymmetricSafeAreaInsetsAreRespected() {
         let fixture = ModalFixture()
         defer { fixture.close() }
-        fixture.container.insets = UIEdgeInsets(top: 30, left: 90, bottom: 20, right: 10)
+        fixture.window.insets = UIEdgeInsets(top: 30, left: 90, bottom: 20, right: 10)
         fixture.layout()
         #expect(fixture.content.frame.midX == 440)
         #expect(fixture.content.frame.maxY == 772)
+    }
+
+    @Test
+    func transientSafeAreaReductionDoesNotMoveModal() {
+        let fixture = ModalFixture()
+        defer { fixture.close() }
+        fixture.window.insets = UIEdgeInsets(top: 30, left: 10, bottom: 20, right: 90)
+        fixture.container.insets = UIEdgeInsets(top: 30, left: 10, bottom: 20, right: 90)
+        fixture.layout()
+        let original = fixture.content.frame
+        fixture.container.insets = UIEdgeInsets(top: 30, left: 10, bottom: 20, right: 0)
+        fixture.layout()
+        #expect(fixture.content.frame == original)
+    }
+
+    @Test
+    func systemSafeAreaReductionMovesModal() {
+        let fixture = ModalFixture()
+        defer { fixture.close() }
+        fixture.window.insets = UIEdgeInsets(top: 30, left: 10, bottom: 20, right: 90)
+        fixture.layout()
+        #expect(fixture.content.frame.midX == 360)
+        fixture.window.insets.right = 0
+        fixture.window.insets.top = 0
+        fixture.layout()
+        #expect(fixture.content.frame.midX == 405)
+        #expect(fixture.content.frame.maxY == 772)
+        fixture.window.insets = UIEdgeInsets(top: 0, left: 90, bottom: 0, right: 10)
+        fixture.layout()
+        #expect(fixture.content.frame.midX == 440)
+        #expect(fixture.content.frame.maxY == 792)
     }
 
     @available(iOS 27.1, *)
@@ -83,6 +114,133 @@ struct SuperModalTests {
 
     @available(iOS 27.1, *)
     @Test
+    func bookPoseUsesSourceRegion() {
+        let fixture = ModalFixture()
+        defer { fixture.close() }
+        fixture.controller.regions = [(book, true)]
+        fixture.setSourcePoint(CGPoint(x: 100, y: 200))
+        fixture.layout()
+        #expect(fixture.content.frame.minX == 16)
+        #expect(fixture.content.frame.maxX == 374)
+    }
+
+    @available(iOS 27.1, *)
+    @Test
+    func bookPoseKeepsSourceSideWhenCreasePassesAnchor() {
+        let fixture = ModalFixture()
+        defer { fixture.close() }
+        fixture.setSourcePoint(CGPoint(x: 395, y: 200))
+        fixture.layout()
+        fixture.controller.regions = [(CGRect(x: 380, y: 0, width: 30, height: 800), true)]
+        fixture.layout()
+        #expect(fixture.content.frame.maxX <= 364)
+    }
+
+    @available(iOS 27.1, *)
+    @Test
+    func bookPoseKeepsSelectedRightSideWhenCreaseWidens() {
+        let fixture = ModalFixture()
+        defer { fixture.close() }
+        fixture.controller.regions = [(CGRect(x: 380, y: 0, width: 10, height: 800), true)]
+        fixture.setSourcePoint(CGPoint(x: 395, y: 200))
+        fixture.layout()
+        #expect(fixture.content.frame.minX == 406)
+        fixture.controller.regions = [(CGRect(x: 380, y: 0, width: 30, height: 800), true)]
+        fixture.layout()
+        #expect(fixture.content.frame.minX == 426)
+        fixture.controller.regions = []
+        fixture.layout()
+        fixture.controller.regions = [(CGRect(x: 400, y: 0, width: 20, height: 800), true)]
+        fixture.layout()
+        #expect(fixture.content.frame.minX == 436)
+    }
+
+    @available(iOS 27.1, *)
+    @Test(arguments: [ModalPresentationSide.left, .right])
+    func foldingFollowsSourcePaneAfterItRelayouts(_ side: ModalPresentationSide) {
+        let fixture = ModalFixture()
+        defer { fixture.close() }
+        fixture.sourceView.frame = fixture.container.bounds
+        fixture.layout() // Present while flat, with a source spanning both panes.
+        fixture.controller.regions = [(book, true)]
+        fixture.layout() // UIKit can lay out the modal before moving its presenter.
+        fixture.sourceView.frame = CGRect(x: side == .left ? 0 : 410, y: 0, width: 390, height: 800)
+        fixture.layout()
+        #expect(fixture.content.frame.minX == (side == .left ? 16 : 426))
+    }
+
+    @available(iOS 27.1, *)
+    @Test
+    func movingSourceKeepsLastSideWhileItOverlapsCrease() {
+        let fixture = ModalFixture()
+        defer { fixture.close() }
+        fixture.controller.regions = [(book, true)]
+        fixture.setSourcePoint(CGPoint(x: 700, y: 200))
+        fixture.layout()
+        fixture.setSourcePoint(CGPoint(x: 100, y: 200))
+        fixture.layout()
+        #expect(fixture.content.frame.minX == 16)
+        fixture.sourceView.frame = fixture.container.bounds
+        fixture.layout()
+        #expect(fixture.content.frame.minX == 16)
+    }
+
+    @available(iOS 27.1, *)
+    @Test
+    func sheetSourceFallbackUsesWindowCoordinatesAfterContainerExpands() {
+        let fixture = ModalFixture()
+        defer { fixture.close() }
+        fixture.container.frame = CGRect(x: 400, y: 0, width: 400, height: 800)
+        fixture.setSourcePoint(CGPoint(x: 100, y: 200)) // x=500 in the window.
+        fixture.layout()
+        fixture.sourceView.removeFromSuperview()
+        fixture.container.frame = fixture.window.bounds
+        fixture.controller.regions = [(book, true)]
+        fixture.layout()
+        #expect(fixture.content.frame.minX == 426)
+    }
+
+    @available(iOS 27.1, *)
+    @Test
+    func sourceInAnotherWindowInSameSceneIsConverted() {
+        let fixture = ModalFixture()
+        let sourceWindow = LayoutWindow(frame: fixture.window.frame)
+        defer { fixture.close(); sourceWindow.isHidden = true }
+        sourceWindow.addSubview(fixture.sourceView)
+        fixture.setSourcePoint(CGPoint(x: 100, y: 200))
+        fixture.controller.regions = [(book, true)]
+        fixture.layout()
+        #expect(fixture.content.frame.minX == 16)
+    }
+
+    @available(iOS 27.1, *)
+    @Test(arguments: [ModalPresentationSide.left, .right])
+    func explicitSideOverridesSpanningSource(_ side: ModalPresentationSide) {
+        let fixture = ModalFixture(side: side)
+        defer { fixture.close() }
+        fixture.controller.regions = [(book, true)]
+        fixture.sourceView.frame = fixture.container.bounds
+        fixture.layout()
+        #expect(fixture.content.frame.minX == (side == .left ? 16 : 426))
+    }
+
+    @available(iOS 27.1, *)
+    @Test
+    func dismissalClearsSourceSide() {
+        let fixture = ModalFixture()
+        defer { fixture.close() }
+        fixture.controller.regions = [(book, true)]
+        fixture.setSourcePoint(CGPoint(x: 100, y: 200))
+        fixture.layout()
+        #expect(fixture.content.frame.minX == 16)
+        fixture.controller.dismissalTransitionDidEnd(true)
+        fixture.setSourcePoint(CGPoint(x: 700, y: 200))
+        fixture.layout()
+        #expect(fixture.content.frame.minX == 426)
+    }
+
+    @available(iOS 27.1, *)
+    @Test
     func tabletopRespectsVerticalAlignment() {
         for name in ["top", "bottom"] {
             let alignment: ModalPresentationAlignment = switch name {
@@ -93,6 +251,7 @@ struct SuperModalTests {
             let fixture = ModalFixture(alignment: alignment)
             defer { fixture.close() }
             fixture.controller.regions = [(tabletop, true)]
+            fixture.setSourcePoint(CGPoint(x: 100, y: alignment == .top ? 600 : 200))
             fixture.layout()
             if alignment == .top {
                 #expect(fixture.content.frame.minY == 8)
@@ -109,6 +268,7 @@ struct SuperModalTests {
         let fixture = ModalFixture(alignment: .center)
         defer { fixture.close() }
         fixture.controller.regions = [(CGRect(x: 0, y: 290, width: 800, height: 20), true)]
+        fixture.setSourcePoint(CGPoint(x: 100, y: 100))
         fixture.layout()
         #expect(fixture.content.frame.midY == 555)
     }
@@ -139,6 +299,25 @@ struct SuperModalTests {
         #expect(fixture.content.frame.maxY == 792)
         #expect(!fixture.content.frame.intersects(book))
         #expect(!fixture.content.frame.intersects(tabletop))
+    }
+
+    @available(iOS 27.1, *)
+    @Test
+    func sourceSidePreservesVerticalAlignmentAcrossMultipleDivisions() {
+        for alignment in [ModalPresentationAlignment.top, .bottom] {
+            let fixture = ModalFixture(alignment: alignment, height: 100)
+            defer { fixture.close() }
+            fixture.controller.regions = [(book, true), (tabletop, true)]
+            fixture.setSourcePoint(CGPoint(x: 100, y: 200))
+            fixture.layout()
+            #expect(fixture.content.frame.minX == 16)
+            #expect(fixture.content.frame.maxX == 374)
+            if alignment == .top {
+                #expect(fixture.content.frame.minY == 8)
+            } else {
+                #expect(fixture.content.frame.maxY == 792)
+            }
+        }
     }
 
     @Test
@@ -280,6 +459,72 @@ struct SuperModalTests {
         #expect(fixture.content.frame.maxY == 792)
     }
 
+    @Test(arguments: [false, true])
+    func modifierPassesExplicitSide(usesItem: Bool) async throws {
+        let state = SidePresentationState()
+        let root = UIHostingController(rootView: SidePresentationContent(state: state, usesItem: usesItem))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 800, height: 800))
+        window.rootViewController = root
+        window.makeKeyAndVisible()
+        root.view.layoutIfNeeded()
+        defer {
+            root.dismiss(animated: false)
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+        state.isPresented = true
+        state.item = SidePresentationItem()
+        for _ in 0..<100 {
+            root.view.layoutIfNeeded()
+            if root.presentedViewController != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let modal = try #require(root.presentedViewController as? CustomPresentable)
+        #expect(modal.presentationSide == .left)
+        let sourceWindow = try #require(modal.presentationSourceView?.window)
+        #expect(sourceWindow.windowScene === window.windowScene)
+    }
+
+    @available(iOS 27.1, *)
+    @Test
+    func sourceRelayoutRequestsModalPlacementUpdate() {
+        let source = SuperModalSourceController()
+        let window = LayoutWindow(frame: CGRect(x: 0, y: 0, width: 800, height: 800))
+        window.rootViewController = source
+        window.makeKeyAndVisible()
+        source.view.layoutIfNeeded()
+        let modal = SuperModalHostingController(rootView: RowsContent(rows: 1))
+        modal.presentationSourceView = source.view
+        let container = LayoutContainer(frame: window.bounds)
+        window.addSubview(container)
+        let presentation = SyntheticPresentationController(presentedViewController: modal, presenting: source)
+        presentation.testContainer = container
+        presentation.regions = [(book, true)]
+        let manager = TestTransitionDelegate(controller: presentation)
+        modal.modalPresentationStyle = .custom
+        modal.transitionManager = manager
+        modal.transitioningDelegate = manager
+        source.modalController = modal
+        source.present(modal, animated: false)
+        container.addSubview(modal.view)
+        container.onLayout = { [weak presentation] in presentation?.containerViewWillLayoutSubviews() }
+        defer {
+            presentation.dismissalTransitionDidEnd(true)
+            container.onLayout = nil
+            source.dismiss(animated: false)
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+        container.setNeedsLayout()
+        container.layoutIfNeeded()
+        #expect(modal.view.frame.minX == 426)
+        source.view.frame.size.width = 390
+        source.view.setNeedsLayout()
+        source.view.layoutIfNeeded()
+        container.layoutIfNeeded() // Only the source callback should invalidate this.
+        #expect(modal.view.frame.minX == 16)
+    }
+
     @Test
     func presentedModalAutomaticallyResizesWhenRowsChange() async throws {
         let presenter = UIViewController()
@@ -356,6 +601,37 @@ struct SuperModalTests {
     }
 }
 
+@MainActor
+private final class SidePresentationState: ObservableObject {
+    @Published var isPresented = false
+    @Published var item: SidePresentationItem?
+}
+
+private struct SidePresentationItem: Identifiable {
+    let id = 0
+}
+
+private struct SidePresentationContent: View {
+    @ObservedObject var state: SidePresentationState
+    let usesItem: Bool
+
+    var body: some View {
+        if usesItem {
+            Text("Presenter")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .superModal(item: $state.item, side: .left) { _ in
+                    Text("Modal").padding()
+                }
+        } else {
+            Text("Presenter")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .superModal(isPresented: $state.isPresented, side: .left) {
+                    Text("Modal").padding()
+                }
+        }
+    }
+}
+
 private struct RowsContent: View {
     let rows: Int
     var body: some View {
@@ -368,22 +644,26 @@ private struct RowsContent: View {
 
 @MainActor
 private final class ModalFixture {
-    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 800, height: 1000))
+    let window = LayoutWindow(frame: CGRect(x: 0, y: 0, width: 800, height: 800))
     let container = LayoutContainer(frame: CGRect(x: 0, y: 0, width: 800, height: 800))
     let content = FittingView()
+    let sourceView = UIView()
     let presented = ModalContentController()
     let controller: SyntheticPresentationController
 
-    init(alignment: ModalPresentationAlignment = .bottom, height: CGFloat = 200) {
+    init(alignment: ModalPresentationAlignment = .bottom, height: CGFloat = 200, side: ModalPresentationSide = .automatic) {
         let presenter = UIViewController()
         window.rootViewController = presenter
         presenter.loadViewIfNeeded()
         window.addSubview(presenter.view)
         presenter.view.addSubview(container)
+        container.addSubview(sourceView)
+        presented.presentationSourceView = sourceView
         #expect(container.window === window)
         content.fittingHeight = height
         presented.view = content
         presented.presentationAlignment = alignment
+        presented.presentationSide = side
         presented.traitOverrides.horizontalSizeClass = .regular
         controller = SyntheticPresentationController(presentedViewController: presented, presenting: presenter)
         controller.testContainer = container
@@ -396,6 +676,11 @@ private final class ModalFixture {
     func layout() {
         container.setNeedsLayout()
         container.layoutIfNeeded()
+    }
+
+    func setSourcePoint(_ point: CGPoint) {
+        sourceView.bounds = CGRect(x: 0, y: 0, width: 2, height: 2)
+        sourceView.center = point
     }
 
     func sendKeyboard(_ name: Notification.Name, frame: CGRect) {
@@ -438,6 +723,12 @@ private final class SyntheticPresentationController: ModalPresentationController
 }
 
 @MainActor
+private final class LayoutWindow: UIWindow {
+    var insets: UIEdgeInsets = .zero
+    override var safeAreaInsets: UIEdgeInsets { insets }
+}
+
+@MainActor
 private final class LayoutContainer: UIView {
     var insets: UIEdgeInsets = .zero
     var onLayout: (() -> Void)?
@@ -466,6 +757,8 @@ private final class FittingView: UIView {
 private final class ModalContentController: UIViewController, CustomPresentable {
     var transitionManager: UIViewControllerTransitioningDelegate?
     var presentationAlignment: ModalPresentationAlignment = .bottom
+    var presentationSide: ModalPresentationSide = .automatic
+    weak var presentationSourceView: UIView?
 }
 
 @MainActor

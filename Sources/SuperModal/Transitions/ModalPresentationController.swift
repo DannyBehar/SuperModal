@@ -6,6 +6,14 @@ public enum ModalPresentationAlignment {
     case bottom
 }
 
+/// The horizontal region used when a vertical crease divides the presentation.
+public enum ModalPresentationSide: Sendable {
+    /// Follows the view carrying the modal modifier as its layout changes.
+    case automatic
+    case left
+    case right
+}
+
 class ModalPresentationController: UIPresentationController {
 
     lazy var fadeView: UIView = .make(backgroundColor: UIColor.black.withAlphaComponent(0.3), alpha: 0.0)
@@ -24,6 +32,9 @@ class ModalPresentationController: UIPresentationController {
     private var keyboardAnimator: UIViewPropertyAnimator?
     private var basePresentedFrame: CGRect = .zero
     private var lockedHeightWhileKeyboardVisible: CGFloat?
+    private var sourceAnchorX: CGFloat?
+    private var sourceSide: ModalPresentationSide?
+    private var lastAutomaticSourceFrame: CGRect?
 
     override func presentationTransitionWillBegin() {
         guard let containerView = containerView else { return }
@@ -73,6 +84,11 @@ class ModalPresentationController: UIPresentationController {
 
     override func presentationTransitionDidEnd(_ completed: Bool) {
         super.presentationTransitionDidEnd(completed)
+        if !completed {
+            sourceAnchorX = nil
+            sourceSide = nil
+            lastAutomaticSourceFrame = nil
+        }
         if completed {
             if didTransformPresentingView {
                 // UIKit may reset the presenting view's transform at the end of the transition.
@@ -97,6 +113,9 @@ class ModalPresentationController: UIPresentationController {
             keyboardScreen = nil
             basePresentedFrame = .zero
             lockedHeightWhileKeyboardVisible = nil
+            sourceAnchorX = nil
+            sourceSide = nil
+            lastAutomaticSourceFrame = nil
         }
     }
 
@@ -315,47 +334,40 @@ class ModalPresentationController: UIPresentationController {
         return []
     }
 
+    private func systemSafeAreaFrame(in containerView: UIView) -> CGRect {
+        guard let window = containerView.window else {
+            return containerView.bounds.inset(by: containerView.safeAreaInsets)
+        }
+
+        // The presentation container's insets can change as the modal moves. Use
+        // the window's current safe area to avoid that feedback without caching it.
+        let windowSafeArea = window.bounds.inset(by: window.safeAreaInsets)
+        return containerView.bounds.intersection(containerView.convert(windowSafeArea, from: window))
+    }
+
     private func safeAreaFrame(
         in containerView: UIView,
         for alignment: ModalPresentationAlignment
     ) -> CGRect {
-        let safeAreaFrame = containerView.bounds.inset(by: containerView.safeAreaInsets)
+        let safeAreaFrame = systemSafeAreaFrame(in: containerView)
+        captureSourceAnchor(in: containerView)
 
         if #available(iOS 27.1, *) {
-            let availableFrames = divisionRegions(in: containerView)
+            let divisions = divisionRegions(in: containerView)
                 .filter(\.isActive)
+                .map(\.frame)
+            let availableFrames = divisions
                 .reduce([safeAreaFrame]) { frames, region in
-                    frames.flatMap { availableFrames(in: $0, avoiding: region.frame) }
+                    frames.flatMap { availableFrames(in: $0, avoiding: region) }
                 }
 
             guard !availableFrames.isEmpty else { return safeAreaFrame }
 
-            let preferredFrame: CGRect
-            switch alignment {
-            case .top:
-                preferredFrame = availableFrames.min { lhs, rhs in
-                    if lhs.minY != rhs.minY {
-                        return lhs.minY < rhs.minY
-                    }
-                    return lhs.maxX > rhs.maxX
-                } ?? safeAreaFrame
-            case .center:
-                preferredFrame = availableFrames.max { lhs, rhs in
-                    let lhsArea = lhs.width * lhs.height
-                    let rhsArea = rhs.width * rhs.height
-                    if lhsArea != rhsArea {
-                        return lhsArea < rhsArea
-                    }
-                    return lhs.maxX < rhs.maxX
-                } ?? safeAreaFrame
-            case .bottom:
-                preferredFrame = availableFrames.max { lhs, rhs in
-                    if lhs.maxY != rhs.maxY {
-                        return lhs.maxY < rhs.maxY
-                    }
-                    return lhs.maxX < rhs.maxX
-                } ?? safeAreaFrame
-            }
+            let preferredFrame = preferredFrame(
+                from: sourceFrames(from: availableFrames, avoiding: divisions, in: containerView),
+                alignment: alignment,
+                fallback: safeAreaFrame
+            )
 
             let keyboardFrame = keyboardFrame(in: containerView)
             let keyboardIntersection = preferredFrame.intersection(keyboardFrame)
@@ -393,6 +405,120 @@ class ModalPresentationController: UIPresentationController {
         }
 
         return safeAreaFrame
+    }
+
+    private func sourceFrame(in containerView: UIView) -> CGRect? {
+        guard let sourceView = (presentedViewController as? CustomPresentable)?.presentationSourceView,
+              !sourceView.bounds.isEmpty,
+              let sourceWindow = sourceView.window,
+              let window = containerView.window,
+              sourceWindow.screen === window.screen,
+              sourceWindow.windowScene === window.windowScene else { return nil }
+
+        // Sheets can present in another window in the same scene. Convert through
+        // the windows rather than requiring both views to share a window.
+        let frameInSourceWindow = sourceView.convert(sourceView.bounds, to: sourceWindow)
+        let frameInWindow = sourceWindow.convert(frameInSourceWindow, to: window)
+        return containerView.convert(frameInWindow, from: window)
+    }
+
+    private func captureSourceAnchor(in containerView: UIView) {
+        guard sourceAnchorX == nil, sourceSide == nil,
+              let presentable = presentedViewController as? CustomPresentable else { return }
+        if presentable.presentationSide != .automatic {
+            sourceSide = presentable.presentationSide
+            return
+        }
+        guard let frame = sourceFrame(in: containerView),
+              let window = containerView.window,
+              window.bounds.width > 0.0 else { return }
+
+        // Only a fallback for a detached or ambiguous source. A sheet-sized
+        // presentation container can later expand, so normalize in the window.
+        let frameInWindow = containerView.convert(frame, to: window)
+        sourceAnchorX = (frameInWindow.midX - window.bounds.minX) / window.bounds.width
+    }
+
+    private func sourceFrames(
+        from frames: [CGRect],
+        avoiding divisions: [CGRect],
+        in containerView: UIView
+    ) -> [CGRect] {
+        // Horizontal creases continue to use vertical alignment, including when
+        // a source lies in the opposite tabletop region.
+        guard let division = divisions.map({ $0.intersection(containerView.bounds) }).first(where: {
+            !$0.isNull && !$0.isEmpty && $0.width < $0.height
+        }) else { return frames }
+
+        let automatic = (presentedViewController as? CustomPresentable)?.presentationSide == .automatic
+        if automatic, let frame = sourceFrame(in: containerView), let window = containerView.window {
+            let frameInWindow = containerView.convert(frame, to: window)
+            // A moving crease must not masquerade as a moving source.
+            if sourceSide == nil || frameInWindow != lastAutomaticSourceFrame {
+                let extendsLeft = frame.minX < division.minX
+                let extendsRight = frame.maxX > division.maxX
+                if extendsLeft && !extendsRight {
+                    sourceSide = .left
+                } else if extendsRight && !extendsLeft {
+                    sourceSide = .right
+                }
+            }
+            lastAutomaticSourceFrame = frameInWindow
+        }
+
+        if sourceSide == nil, let sourceAnchorX, let window = containerView.window {
+            let sourceX = containerView.convert(
+                CGPoint(x: window.bounds.minX + sourceAnchorX * window.bounds.width, y: window.bounds.midY),
+                from: window
+            ).x
+            if sourceX < division.minX {
+                sourceSide = .left
+            } else if sourceX >= division.maxX {
+                sourceSide = .right
+            } else {
+                sourceSide = sourceAnchorX < 0.5 ? .left : .right
+            }
+        }
+
+        // Follow a source that clearly moves to one pane. Keep the last side
+        // while the source spans both panes, detaches, or lies in the crease.
+        guard let sourceSide else { return frames }
+        let preferred = frames.filter {
+            sourceSide == .left ? $0.maxX <= division.minX : $0.minX >= division.maxX
+        }
+        return preferred.isEmpty ? frames : preferred
+    }
+
+    private func preferredFrame(
+        from availableFrames: [CGRect],
+        alignment: ModalPresentationAlignment,
+        fallback: CGRect
+    ) -> CGRect {
+        switch alignment {
+        case .top:
+            return availableFrames.min { lhs, rhs in
+                if lhs.minY != rhs.minY {
+                    return lhs.minY < rhs.minY
+                }
+                return lhs.maxX > rhs.maxX
+            } ?? fallback
+        case .center:
+            return availableFrames.max { lhs, rhs in
+                let lhsArea = lhs.width * lhs.height
+                let rhsArea = rhs.width * rhs.height
+                if lhsArea != rhsArea {
+                    return lhsArea < rhsArea
+                }
+                return lhs.maxX < rhs.maxX
+            } ?? fallback
+        case .bottom:
+            return availableFrames.max { lhs, rhs in
+                if lhs.maxY != rhs.maxY {
+                    return lhs.maxY < rhs.maxY
+                }
+                return lhs.maxX < rhs.maxX
+            } ?? fallback
+        }
     }
 
     private func availableFrames(in frame: CGRect, avoiding reservedFrame: CGRect) -> [CGRect] {

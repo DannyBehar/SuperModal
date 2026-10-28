@@ -42,6 +42,8 @@ final class SuperModalHostingController<Content: View>: UIViewController, Custom
     var transitionManager: UIViewControllerTransitioningDelegate?
     var onDismiss: (() -> Void)?
     var presentationAlignment: ModalPresentationAlignment = .top
+    var presentationSide: ModalPresentationSide = .automatic
+    weak var presentationSourceView: UIView?
     var presentationTransformTargetView: UIView? { contentContainerView }
 
     private let contentContainerView = UIView()
@@ -160,25 +162,49 @@ final class SuperModalHostingController<Content: View>: UIViewController, Custom
     }
 }
 
+final class SuperModalSourceController: UIViewController {
+    weak var modalController: UIViewController?
+    private var lastSourceFrame: CGRect?
+    private weak var lastWindow: UIWindow?
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let window = view.window
+        let frame = window.map { $0.convert(view.convert(view.bounds, to: $0), to: nil) }
+        guard frame != lastSourceFrame || window !== lastWindow else { return }
+        lastSourceFrame = frame
+        lastWindow = window
+        // SwiftUI can move a sheet or split-view pane after the modal's own
+        // layout pass. Reconcile placement once the source finishes laying out.
+        modalController?.presentationController?.containerView?.setNeedsLayout()
+    }
+}
+
 private struct SuperModalPresenter<Content: View>: UIViewControllerRepresentable {
     @Binding var isPresented: Bool
     let interactiveDismissalType: InteractiveDismissalType
     let alignment: ModalPresentationAlignment
+    let side: ModalPresentationSide
     let content: () -> Content
     
-    func makeUIViewController(context: Context) -> UIViewController {
-        UIViewController()
+    func makeUIViewController(context: Context) -> SuperModalSourceController {
+        SuperModalSourceController()
     }
     
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+    func updateUIViewController(_ uiViewController: SuperModalSourceController, context: Context) {
         if isPresented {
             if let presentedController = context.coordinator.presentedController {
+                uiViewController.modalController = presentedController
+                presentedController.presentationSourceView = uiViewController.view
                 presentedController.rootView = content()
                 presentedController.presentationAlignment = alignment
                 presentedController.updatePresentationLayout(animated: true)
             } else {
                 let hostingController = SuperModalHostingController(rootView: content())
                 hostingController.presentationAlignment = alignment
+                hostingController.presentationSide = side
+                hostingController.presentationSourceView = uiViewController.view
+                uiViewController.modalController = hostingController
                 hostingController.onDismiss = { [weak coordinator = context.coordinator] in
                     coordinator?.isPresented.wrappedValue = false
                     coordinator?.presentedController = nil
@@ -192,6 +218,7 @@ private struct SuperModalPresenter<Content: View>: UIViewControllerRepresentable
                 presentedController.dismiss(animated: true)
             }
             context.coordinator.presentedController = nil
+            uiViewController.modalController = nil
         }
     }
     
@@ -206,7 +233,7 @@ private struct SuperModalPresenter<Content: View>: UIViewControllerRepresentable
         init(isPresented: Binding<Bool>) {
             self.isPresented = isPresented
         }
-        
+
         func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
             isPresented.wrappedValue = false
             presentedController = nil
@@ -218,22 +245,28 @@ private struct SuperModalItemPresenter<Item: Identifiable, Content: View>: UIVie
     @Binding var item: Item?
     let interactiveDismissalType: InteractiveDismissalType
     let alignment: ModalPresentationAlignment
+    let side: ModalPresentationSide
     let content: (Item) -> Content
     
-    func makeUIViewController(context: Context) -> UIViewController {
-        UIViewController()
+    func makeUIViewController(context: Context) -> SuperModalSourceController {
+        SuperModalSourceController()
     }
     
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+    func updateUIViewController(_ uiViewController: SuperModalSourceController, context: Context) {
         if let currentItem = item {
             if let presentedController = context.coordinator.presentedController {
+                uiViewController.modalController = presentedController
+                presentedController.presentationSourceView = uiViewController.view
                 presentedController.rootView = content(currentItem)
                 presentedController.presentationAlignment = alignment
                 presentedController.updatePresentationLayout(animated: true)
             } else {
                 let hostingController = SuperModalHostingController(rootView: content(currentItem))
                 hostingController.presentationAlignment = alignment
-                
+                hostingController.presentationSide = side
+                hostingController.presentationSourceView = uiViewController.view
+                uiViewController.modalController = hostingController
+
                 hostingController.onDismiss = { [weak coordinator = context.coordinator] in
                     coordinator?.item.wrappedValue = nil
                     coordinator?.presentedController = nil
@@ -247,6 +280,7 @@ private struct SuperModalItemPresenter<Item: Identifiable, Content: View>: UIVie
                 presentedController.dismiss(animated: true)
             }
             context.coordinator.presentedController = nil
+            uiViewController.modalController = nil
         }
     }
     
@@ -270,10 +304,15 @@ private struct SuperModalItemPresenter<Item: Identifiable, Content: View>: UIVie
 }
 
 extension View {
+    /// Presents a modal, choosing its horizontal region from this view's position.
+    /// Pass an explicit `side` when this view spans both sides of a vertical crease.
+    /// Automatic placement follows this view as it moves; an explicit side stays fixed.
+    /// `alignment` controls vertical placement.
     public func superModal<Content: View>(
         isPresented: Binding<Bool>,
         interactiveDismissalType: InteractiveDismissalType = .standard,
         alignment: ModalPresentationAlignment = .top,
+        side: ModalPresentationSide = .automatic,
         @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         background(
@@ -281,15 +320,21 @@ extension View {
                 isPresented: isPresented,
                 interactiveDismissalType: interactiveDismissalType,
                 alignment: alignment,
+                side: side,
                 content: content
             )
         )
     }
     
+    /// Presents an item's modal, choosing its horizontal region from this view's position.
+    /// Pass an explicit `side` when this view spans both sides of a vertical crease.
+    /// Automatic placement follows this view as it moves; an explicit side stays fixed.
+    /// `alignment` controls vertical placement.
     public func superModal<Item: Identifiable, Content: View>(
         item: Binding<Item?>,
         interactiveDismissalType: InteractiveDismissalType = .standard,
         alignment: ModalPresentationAlignment = .top,
+        side: ModalPresentationSide = .automatic,
         @ViewBuilder content: @escaping (Item) -> Content
     ) -> some View {
         background(
@@ -297,6 +342,7 @@ extension View {
                 item: item,
                 interactiveDismissalType: interactiveDismissalType,
                 alignment: alignment,
+                side: side,
                 content: content
             )
         )
